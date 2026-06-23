@@ -1,0 +1,45 @@
+package inventory_server.controller;
+
+import inventory_server.dto.IssuanceDto;
+import inventory_server.dto.IssuanceRequest;
+import inventory_server.model.Issuance;
+import inventory_server.service.IssuanceService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.web.bind.annotation.*;
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/issuances")
+@RequiredArgsConstructor
+public class IssuanceController {
+
+    private final IssuanceService issuanceService;
+
+    @GetMapping("/item/{itemId}")
+    public ResponseEntity<List<Issuance>> getByItem(@PathVariable Long itemId) {
+        return ResponseEntity.ok(issuanceService.getByItemId(itemId));
+    }
+    @GetMapping
+    public ResponseEntity<List<IssuanceDto>> getAll() {
+        return ResponseEntity.ok(issuanceService.getAll());
+    }
+
+    @PostMapping("/item/{itemId}")
+    public ResponseEntity<Issuance> issue(
+            @PathVariable Long itemId,
+            @RequestBody IssuanceRequest request,
+            @AuthenticationPrincipal UserDetails userDetails) {
+        Issuance issuance = issuanceService.issue(
+                itemId,
+                request.getFullName(),
+                request.getIsIndefinite(),
+                request.getReturnDate(),
+                userDetails.getUsername()
+        );
+        return ResponseEntity.ok(issuance);
+    }
+
+}
