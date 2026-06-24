@@ -95,4 +95,7 @@ public class IssuanceService {
     public void deleteBetween(LocalDate from, LocalDate to) {
         issuanceRepository.deleteByIssuedAtBetween(from, to);
     }
+    public void deleteById(Long id) {
+        issuanceRepository.deleteById(id);
+    }
 }

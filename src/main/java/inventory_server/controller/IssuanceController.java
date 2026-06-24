@@ -57,4 +57,9 @@ public class IssuanceController {
         issuanceService.deleteBetween(LocalDate.parse(from), LocalDate.parse(to));
         return ResponseEntity.noContent().build();
     }
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> deleteById(@PathVariable Long id) {
+        issuanceService.deleteById(id);
+        return ResponseEntity.noContent().build();
+    }
 }
