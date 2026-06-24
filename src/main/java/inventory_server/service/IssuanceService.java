@@ -57,7 +57,8 @@ public class IssuanceService {
                         i.getFullName(),
                         i.getIssuedAt(),
                         i.getIsIndefinite(),
-                        i.getReturnDate()
+                        i.getReturnDate(),
+                        i.getItem() != null ? i.getItem().getPrinterName() : null
                 ))
                 .collect(java.util.stream.Collectors.toList());
     }

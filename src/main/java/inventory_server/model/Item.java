@@ -34,4 +34,7 @@ public class Item {
 
     @Column(name = "created_at")
     private LocalDateTime createdAt = LocalDateTime.now();
+
+    @Column(name = "printer_name")
+    private String printerName;
 }
