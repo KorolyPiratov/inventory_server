@@ -87,4 +87,12 @@ public class IssuanceService {
 
         return issuanceRepository.save(issuance);
     }
+
+    public void deleteByItemId(Long itemId) {
+        issuanceRepository.deleteAll(issuanceRepository.findByItemId(itemId));
+    }
+
+    public void deleteBetween(LocalDate from, LocalDate to) {
+        issuanceRepository.deleteByIssuedAtBetween(from, to);
+    }
 }

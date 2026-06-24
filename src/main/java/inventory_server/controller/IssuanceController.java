@@ -9,6 +9,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
+
+import java.time.LocalDate;
 import java.util.List;
 
 @RestController
@@ -42,4 +44,17 @@ public class IssuanceController {
         return ResponseEntity.ok(issuance);
     }
 
+    @DeleteMapping("/item/{itemId}")
+    public ResponseEntity<Void> deleteByItem(@PathVariable Long itemId) {
+        issuanceService.deleteByItemId(itemId);
+        return ResponseEntity.noContent().build();
+    }
+
+    @DeleteMapping("/between")
+    public ResponseEntity<Void> deleteBetween(
+            @RequestParam String from,
+            @RequestParam String to) {
+        issuanceService.deleteBetween(LocalDate.parse(from), LocalDate.parse(to));
+        return ResponseEntity.noContent().build();
+    }
 }

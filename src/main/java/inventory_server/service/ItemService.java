@@ -1,6 +1,7 @@
 package inventory_server.service;
 
 import inventory_server.model.Item;
+import inventory_server.repository.IssuanceRepository;
 import inventory_server.repository.ItemRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -11,6 +12,7 @@ import java.util.List;
 public class ItemService {
 
     private final ItemRepository itemRepository;
+    private final IssuanceRepository issuanceRepository;
 
     public List<Item> getAll() {
         return itemRepository.findAll();
@@ -52,6 +54,11 @@ public class ItemService {
         return itemRepository.findAll();
     }
     public void deleteAll() {
+        issuanceRepository.deleteAll();
         itemRepository.deleteAll();
+    }
+    public void deleteById(Long id) {
+        issuanceRepository.deleteAll(issuanceRepository.findByItemId(id));
+        itemRepository.deleteById(id);
     }
 }

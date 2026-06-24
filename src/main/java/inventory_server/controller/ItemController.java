@@ -35,11 +35,6 @@ public class ItemController {
         return ResponseEntity.ok(itemService.update(id, item));
     }
 
-    @DeleteMapping("/{id}")
-    public ResponseEntity<Void> delete(@PathVariable Long id) {
-        itemService.delete(id);
-        return ResponseEntity.ok().build();
-    }
 
     @GetMapping("/search")
     public ResponseEntity<List<Item>> search(@RequestParam String name) {
@@ -56,6 +51,11 @@ public class ItemController {
     @DeleteMapping
     public ResponseEntity<Void> deleteAll() {
         itemService.deleteAll();
+        return ResponseEntity.noContent().build();
+    }
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> deleteOne(@PathVariable Long id) {
+        itemService.deleteById(id);
         return ResponseEntity.noContent().build();
     }
 }
