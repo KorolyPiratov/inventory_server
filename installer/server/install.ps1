@@ -63,33 +63,38 @@ function Install-PostgreSQL {
 function Setup-Database {
     Write-Step "Настройка базы данных..."
 
-    # Явно запускаем службу PostgreSQL
+    # Принудительная кодировка для pg_isready
+    $env:PGCLIENTENCODING = "UTF8"
+    chcp 65001 | Out-Null
+
     $pgService = Get-Service -Name "postgresql*" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($pgService) {
         Write-Host "Запускаем службу: $($pgService.Name)"
         Start-Service -Name $pgService.Name -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 5
-    } else {
-        Write-Host "Служба PostgreSQL не найдена, пробуем запустить pg_ctl..." -ForegroundColor Yellow
-        & "$PG_BIN\pg_ctl.exe" start -D $PG_DATA -w -t 30 2>&1
-        Start-Sleep -Seconds 3
     }
 
     $env:PGPASSWORD = $PG_PASSWORD
 
-    # Ждём пока PostgreSQL примет соединения
+    # Ждём соединения — проверяем через порт вместо pg_isready
     $retries = 0
     do {
         Start-Sleep -Seconds 3
         $retries++
         Write-Host "Проверка соединения ($retries/20)..."
-        $result = & "$PG_BIN\pg_isready.exe" -U postgres 2>&1
-        Write-Host $result
-    } while ($result -notmatch "accepting" -and $retries -lt 20)
+        try {
+            $tcp = New-Object System.Net.Sockets.TcpClient
+            $tcp.Connect("localhost", 5432)
+            $tcp.Close()
+            Write-Host "PostgreSQL доступен!" -ForegroundColor Green
+            break
+        } catch {
+            Write-Host "Ожидание..."
+        }
+    } while ($retries -lt 20)
 
     if ($retries -ge 20) {
-        Write-Host "PostgreSQL не запустился. Попробуйте запустить службу вручную:" -ForegroundColor Red
-        Write-Host "  sc start postgresql-x64-16" -ForegroundColor Yellow
+        Write-Host "PostgreSQL не запустился." -ForegroundColor Red
         Read-Host "Нажмите Enter для выхода"
         exit 1
     }
