@@ -25,6 +25,28 @@ function Check-Admin {
         exit 1
     }
 }
+function Install-Java {
+    Write-Step "Проверка Java..."
+
+    $javaPath = "C:\Program Files\Eclipse Adoptium\jdk-21"
+
+    if (Test-Path "$javaPath\bin\java.exe") {
+        Write-Host "Java уже установлена." -ForegroundColor Green
+        return
+    }
+
+    Write-Host "Скачивание Java 21..."
+    $javaUrl = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.3%2B9/OpenJDK21U-jdk_x64_windows_hotspot_21.0.3_9.msi"
+    $javaInstaller = "$env:TEMP\java21.msi"
+
+    Invoke-WebRequest -Uri $javaUrl -OutFile $javaInstaller -UseBasicParsing
+
+    Write-Host "Установка Java 21..."
+    Start-Process msiexec -ArgumentList "/i `"$javaInstaller`" /quiet /norestart ADDLOCAL=FeatureMain,FeatureEnvironment,FeatureJarFileRunWith,FeatureJavaHome" -Wait
+
+    Remove-Item $javaInstaller -Force -ErrorAction SilentlyContinue
+    Write-Host "Java установлена." -ForegroundColor Green
+}
 
 function Install-PostgreSQL {
     Write-Step "Проверка PostgreSQL..."
@@ -142,18 +164,18 @@ server.port=8080
     Copy-Item "$scriptDir\winsw.exe" "$INSTALL_DIR\InventoryServer.exe" -Force
 
     # Создаём winsw конфиг
-    $winswXml = @"
-<service>
-  <id>InventoryServer</id>
-  <name>Inventory Server</name>
-  <description>Inventory Management Server</description>
-  <executable>java</executable>
-  <arguments>-jar "$INSTALL_DIR\inventory-server.jar" --spring.config.location=file:$INSTALL_DIR\application.properties</arguments>
-  <logpath>$INSTALL_DIR\logs</logpath>
-  <log mode="roll"/>
-  <onfailure action="restart" delay="10 sec"/>
-</service>
-"@
+   $winswXml = @"
+   <service>
+     <id>InventoryServer</id>
+     <name>Inventory Server</name>
+     <description>Inventory Management Server</description>
+     <executable>C:\Program Files\Eclipse Adoptium\jdk-21\bin\java.exe</executable>
+     <arguments>-jar "$INSTALL_DIR\inventory-server.jar" --spring.config.location=file:$INSTALL_DIR\application.properties</arguments>
+     <logpath>$INSTALL_DIR\logs</logpath>
+     <log mode="roll"/>
+     <onfailure action="restart" delay="10 sec"/>
+   </service>
+   "@
     $winswXml | Out-File -FilePath "$INSTALL_DIR\InventoryServer.xml" -Encoding UTF8
 
     # Открываем порт в брандмауэре
@@ -178,5 +200,6 @@ server.port=8080
 # Точка входа
 Check-Admin
 Install-PostgreSQL
+Install-Java
 Setup-Database
 Install-Server
