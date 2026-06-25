@@ -1,6 +1,5 @@
 $ErrorActionPreference = "Stop"
 
-$SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
 $INSTALL_DIR = "C:\InventoryServer"
 $PG_VERSION = "16.3-1"
 $PG_INSTALLER_URL = "https://get.enterprisedb.com/postgresql/postgresql-$PG_VERSION-windows-x64.exe"
@@ -141,7 +140,7 @@ function Install-Server {
     New-Item -ItemType Directory -Force -Path "$INSTALL_DIR\logs" | Out-Null
 
     # Копируем JAR
-    $scriptDir = $SCRIPT_DIR
+    $scriptDir = Split-Path -Parent ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
     Copy-Item "$scriptDir\inventory-server.jar" "$INSTALL_DIR\inventory-server.jar" -Force
 
     # Создаём application.properties
