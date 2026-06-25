@@ -1,0 +1,193 @@
+name: Build Server Installer
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Build JAR
+        run: mvn clean package -DskipTests
+
+      - name: Download WinSW
+        shell: pwsh
+        run: |
+          Invoke-WebRequest `
+            -Uri "https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe" `
+            -OutFile "installer/server/winsw.exe"
+
+      - name: Copy JAR to installer
+        shell: pwsh
+        run: |
+          Copy-Item "target/inventory-server-0.0.1-SNAPSHOT.jar" `
+                    "installer/server/inventory-server.jar"
+
+      - name: Convert PS1 to EXE
+        shell: pwsh
+        run: |
+          Install-Module -Name ps2exe -Force -Scope CurrentUser
+          Import-Module ps2exe
+          Invoke-ps2exe `
+            -InputFile "installer/server/install.ps1" `
+            -OutputFile "installer/server/InventoryServer-Setup.exe" `
+            -NoConsole:$false `
+            -RequireAdmin `
+            -Title "Inventory Server Setup" `
+            -Version "1.0.0"
+
+      - name: Package installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path installer-output
+          Compress-Archive -Path `
+            "installer/server/InventoryServer-Setup.exe", `
+            "installer/server/inventory-server.jar", `
+            "installer/server/winsw.exe" `
+            -DestinationPath "installer-output/InventoryServer-Windows.zip"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-server-windows
+          path: installer-output/
+          retention-days: 30
+
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Build JAR
+        run: mvn clean package -DskipTests
+
+      - name: Create install script
+        run: |
+          mkdir -p installer-output
+          cat > installer-output/install.sh << 'SCRIPT'
+          #!/bin/bash
+          set -e
+
+          INSTALL_DIR="/opt/inventory-server"
+          DB_NAME="inventory_db"
+          DB_USER="inventory"
+          DB_PASS="inventory_pass"
+          JAR_NAME="inventory-server.jar"
+
+          echo ""
+          echo "=== Установка Inventory Server ==="
+          echo ""
+
+          # Проверка root
+          if [ "$EUID" -ne 0 ]; then
+            echo "Запустите от имени root: sudo bash install.sh"
+            exit 1
+          fi
+
+          # Установка Java если нет
+          if ! command -v java &> /dev/null; then
+            echo ">>> Установка Java 21..."
+            apt-get update -q
+            apt-get install -y openjdk-21-jre-headless
+          else
+            echo ">>> Java уже установлена."
+          fi
+
+          # Установка PostgreSQL если нет
+          if ! command -v psql &> /dev/null; then
+            echo ">>> Установка PostgreSQL..."
+            apt-get update -q
+            apt-get install -y postgresql
+          else
+            echo ">>> PostgreSQL уже установлен."
+          fi
+
+          # Запускаем PostgreSQL
+          systemctl start postgresql
+          systemctl enable postgresql
+
+          # Создаём пользователя и БД
+          echo ">>> Настройка базы данных..."
+          sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" | grep -q 1 || \
+            sudo -u postgres psql -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';"
+
+          sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" | grep -q 1 || \
+            sudo -u postgres psql -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;"
+
+          # Копируем JAR
+          echo ">>> Установка сервера..."
+          mkdir -p "$INSTALL_DIR"
+          SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+          cp "$SCRIPT_DIR/$JAR_NAME" "$INSTALL_DIR/$JAR_NAME"
+
+          # Создаём application.properties
+          cat > "$INSTALL_DIR/application.properties" << EOF
+          spring.datasource.url=jdbc:postgresql://localhost:5432/$DB_NAME
+          spring.datasource.username=$DB_USER
+          spring.datasource.password=$DB_PASS
+          spring.jpa.hibernate.ddl-auto=update
+          spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+          server.port=8080
+          EOF
+
+          # Создаём systemd службу
+          cat > /etc/systemd/system/inventory-server.service << EOF
+          [Unit]
+          Description=Inventory Server
+          After=network.target postgresql.service
+
+          [Service]
+          Type=simple
+          ExecStart=java -jar $INSTALL_DIR/$JAR_NAME --spring.config.location=file:$INSTALL_DIR/application.properties
+          Restart=always
+          RestartSec=10
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          systemctl daemon-reload
+          systemctl enable inventory-server
+          systemctl start inventory-server
+
+          echo ""
+          echo "========================================"
+          echo " Сервер успешно установлен!"
+          echo " Адрес: http://$(hostname -I | awk '{print $1}'):8080"
+          echo " Служба: inventory-server (автозапуск)"
+          echo "========================================"
+          SCRIPT
+
+          chmod +x installer-output/install.sh
+          cp target/inventory-server-0.0.1-SNAPSHOT.jar installer-output/inventory-server.jar
+
+          cd installer-output
+          tar -czf InventoryServer-Linux.tar.gz install.sh inventory-server.jar
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-server-linux
+          path: installer-output/InventoryServer-Linux.tar.gz
+          retention-days: 30
