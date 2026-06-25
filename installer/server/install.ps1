@@ -63,34 +63,48 @@ function Install-PostgreSQL {
 function Setup-Database {
     Write-Step "Настройка базы данных..."
 
+    # Явно запускаем службу PostgreSQL
+    $pgService = Get-Service -Name "postgresql*" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($pgService) {
+        Write-Host "Запускаем службу: $($pgService.Name)"
+        Start-Service -Name $pgService.Name -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 5
+    } else {
+        Write-Host "Служба PostgreSQL не найдена, пробуем запустить pg_ctl..." -ForegroundColor Yellow
+        & "$PG_BIN\pg_ctl.exe" start -D $PG_DATA -w -t 30 2>&1
+        Start-Sleep -Seconds 3
+    }
+
     $env:PGPASSWORD = $PG_PASSWORD
 
-    # Ждём пока PostgreSQL запустится
+    # Ждём пока PostgreSQL примет соединения
     $retries = 0
     do {
-        Start-Sleep -Seconds 2
+        Start-Sleep -Seconds 3
         $retries++
+        Write-Host "Проверка соединения ($retries/20)..."
         $result = & "$PG_BIN\pg_isready.exe" -U postgres 2>&1
-    } while ($result -notmatch "accepting" -and $retries -lt 15)
+        Write-Host $result
+    } while ($result -notmatch "accepting" -and $retries -lt 20)
 
-    if ($retries -ge 15) {
-        Write-Host "PostgreSQL не запустился вовремя." -ForegroundColor Red
+    if ($retries -ge 20) {
+        Write-Host "PostgreSQL не запустился. Попробуйте запустить службу вручную:" -ForegroundColor Red
+        Write-Host "  sc start postgresql-x64-16" -ForegroundColor Yellow
         Read-Host "Нажмите Enter для выхода"
         exit 1
     }
 
-    # Проверяем существует ли уже пользователь
+    # Создаём пользователя и БД
     $userExists = & "$PG_BIN\psql.exe" -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>&1
-    if ($userExists -ne "1") {
+    if ($userExists -notmatch "1") {
         & "$PG_BIN\psql.exe" -U postgres -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';"
         Write-Host "Пользователь $DB_USER создан." -ForegroundColor Green
     } else {
         Write-Host "Пользователь $DB_USER уже существует." -ForegroundColor Yellow
     }
 
-    # Проверяем существует ли уже БД
     $dbExists = & "$PG_BIN\psql.exe" -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>&1
-    if ($dbExists -ne "1") {
+    if ($dbExists -notmatch "1") {
         & "$PG_BIN\psql.exe" -U postgres -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;"
         Write-Host "База данных $DB_NAME создана." -ForegroundColor Green
     } else {
