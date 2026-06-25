@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-
+try {
 $INSTALL_DIR = "C:\InventoryServer"
 $PG_VERSION = "16.3-1"
 $PG_INSTALLER_URL = "https://get.enterprisedb.com/postgresql/postgresql-$PG_VERSION-windows-x64.exe"
@@ -203,3 +203,7 @@ Install-PostgreSQL
 Install-Java
 Setup-Database
 Install-Server
+} catch {
+    Write-Host "ОШИБКА: $_" -ForegroundColor Red
+    Read-Host "Нажмите Enter для выхода"
+}
