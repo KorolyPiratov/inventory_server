@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-try {
+
 $INSTALL_DIR = "C:\InventoryServer"
 $PG_VERSION = "16.3-1"
 $PG_INSTALLER_URL = "https://get.enterprisedb.com/postgresql/postgresql-$PG_VERSION-windows-x64.exe"
@@ -10,6 +10,7 @@ $DB_NAME = "inventory_db"
 $DB_USER = "inventory"
 $DB_PASS = "inventory_pass"
 $PG_BIN = "C:\Program Files\PostgreSQL\16\bin"
+$JAVA_EXE = "C:\Program Files\Eclipse Adoptium\jdk-21\bin\java.exe"
 
 function Write-Step($msg) {
     Write-Host ""
@@ -25,12 +26,11 @@ function Check-Admin {
         exit 1
     }
 }
+
 function Install-Java {
     Write-Step "Проверка Java..."
 
-    $javaPath = "C:\Program Files\Eclipse Adoptium\jdk-21"
-
-    if (Test-Path "$javaPath\bin\java.exe") {
+    if (Test-Path $JAVA_EXE) {
         Write-Host "Java уже установлена." -ForegroundColor Green
         return
     }
@@ -56,19 +56,13 @@ function Install-PostgreSQL {
         return
     }
 
-    Write-Step "Скачивание PostgreSQL $PG_VERSION..."
+    Write-Host "Скачивание PostgreSQL $PG_VERSION..."
     Write-Host "Это может занять несколько минут..."
 
-    try {
-        Invoke-WebRequest -Uri $PG_INSTALLER_URL -OutFile $PG_INSTALLER -UseBasicParsing
-    } catch {
-        Write-Host "Ошибка скачивания: $_" -ForegroundColor Red
-        Read-Host "Нажмите Enter для выхода"
-        exit 1
-    }
+    Invoke-WebRequest -Uri $PG_INSTALLER_URL -OutFile $PG_INSTALLER -UseBasicParsing
 
-    Write-Step "Установка PostgreSQL (тихий режим)..."
-    $args = @(
+    Write-Host "Установка PostgreSQL (тихий режим)..."
+    $pgArgs = @(
         "--mode", "unattended",
         "--unattendedmodeui", "none",
         "--superpassword", $PG_PASSWORD,
@@ -76,7 +70,7 @@ function Install-PostgreSQL {
         "--datadir", $PG_DATA,
         "--serverport", "5432"
     )
-    Start-Process -FilePath $PG_INSTALLER -ArgumentList $args -Wait -NoNewWindow
+    Start-Process -FilePath $PG_INSTALLER -ArgumentList $pgArgs -Wait -NoNewWindow
 
     Remove-Item $PG_INSTALLER -Force -ErrorAction SilentlyContinue
     Write-Host "PostgreSQL установлен." -ForegroundColor Green
@@ -85,10 +79,9 @@ function Install-PostgreSQL {
 function Setup-Database {
     Write-Step "Настройка базы данных..."
 
-    # Принудительная кодировка для pg_isready
-    $env:PGCLIENTENCODING = "UTF8"
     chcp 65001 | Out-Null
 
+    # Запускаем службу PostgreSQL
     $pgService = Get-Service -Name "postgresql*" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($pgService) {
         Write-Host "Запускаем службу: $($pgService.Name)"
@@ -98,7 +91,7 @@ function Setup-Database {
 
     $env:PGPASSWORD = $PG_PASSWORD
 
-    # Ждём соединения — проверяем через порт вместо pg_isready
+    # Ждём соединения через TCP
     $retries = 0
     do {
         Start-Sleep -Seconds 3
@@ -121,7 +114,7 @@ function Setup-Database {
         exit 1
     }
 
-    # Создаём пользователя и БД
+    # Создаём пользователя
     $userExists = & "$PG_BIN\psql.exe" -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>&1
     if ($userExists -notmatch "1") {
         & "$PG_BIN\psql.exe" -U postgres -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';"
@@ -130,6 +123,7 @@ function Setup-Database {
         Write-Host "Пользователь $DB_USER уже существует." -ForegroundColor Yellow
     }
 
+    # Создаём БД
     $dbExists = & "$PG_BIN\psql.exe" -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>&1
     if ($dbExists -notmatch "1") {
         & "$PG_BIN\psql.exe" -U postgres -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;"
@@ -142,8 +136,8 @@ function Setup-Database {
 function Install-Server {
     Write-Step "Установка сервера..."
 
-    # Создаём папку установки
     New-Item -ItemType Directory -Force -Path $INSTALL_DIR | Out-Null
+    New-Item -ItemType Directory -Force -Path "$INSTALL_DIR\logs" | Out-Null
 
     # Копируем JAR
     $scriptDir = Split-Path -Parent $MyInvocation.ScriptName
@@ -163,47 +157,69 @@ server.port=8080
     # Копируем WinSW
     Copy-Item "$scriptDir\winsw.exe" "$INSTALL_DIR\InventoryServer.exe" -Force
 
-    # Создаём winsw конфиг
-   $winswXml = @"
-   <service>
-     <id>InventoryServer</id>
-     <name>Inventory Server</name>
-     <description>Inventory Management Server</description>
-     <executable>C:\Program Files\Eclipse Adoptium\jdk-21\bin\java.exe</executable>
-     <arguments>-jar "$INSTALL_DIR\inventory-server.jar" --spring.config.location=file:$INSTALL_DIR\application.properties</arguments>
-     <logpath>$INSTALL_DIR\logs</logpath>
-     <log mode="roll"/>
-     <onfailure action="restart" delay="10 sec"/>
-   </service>
-   "@
+    # Создаём winsw конфиг с полным путём к Java
+    $winswXml = @"
+<service>
+  <id>InventoryServer</id>
+  <name>Inventory Server</name>
+  <description>Inventory Management Server</description>
+  <executable>$JAVA_EXE</executable>
+  <arguments>-jar "$INSTALL_DIR\inventory-server.jar" --spring.config.location=file:$INSTALL_DIR\application.properties</arguments>
+  <logpath>$INSTALL_DIR\logs</logpath>
+  <log mode="roll"/>
+  <onfailure action="restart" delay="10 sec"/>
+</service>
+"@
     $winswXml | Out-File -FilePath "$INSTALL_DIR\InventoryServer.xml" -Encoding UTF8
 
     # Открываем порт в брандмауэре
     netsh advfirewall firewall add rule name="InventoryServer" dir=in action=allow protocol=TCP localport=8080 | Out-Null
 
+    # Удаляем старую службу если есть
+    $existing = Get-Service -Name "InventoryServer" -ErrorAction SilentlyContinue
+    if ($existing) {
+        Write-Host "Удаляем старую службу..."
+        & "$INSTALL_DIR\InventoryServer.exe" stop 2>&1 | Out-Null
+        & "$INSTALL_DIR\InventoryServer.exe" uninstall 2>&1 | Out-Null
+        Start-Sleep -Seconds 2
+    }
+
     # Регистрируем и запускаем службу
     Write-Step "Регистрация службы Windows..."
     & "$INSTALL_DIR\InventoryServer.exe" install
-    Start-Sleep -Seconds 2
+    Start-Sleep -Seconds 3
     & "$INSTALL_DIR\InventoryServer.exe" start
 
-    Write-Host ""
-    Write-Host "========================================" -ForegroundColor Green
-    Write-Host " Сервер успешно установлен!" -ForegroundColor Green
-    Write-Host " Адрес: http://localhost:8080" -ForegroundColor Green
-    Write-Host " Служба: InventoryServer (автозапуск)" -ForegroundColor Green
-    Write-Host "========================================" -ForegroundColor Green
+    # Проверяем что служба запустилась
+    Start-Sleep -Seconds 5
+    $svc = Get-Service -Name "InventoryServer" -ErrorAction SilentlyContinue
+    if ($svc -and $svc.Status -eq "Running") {
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Green
+        Write-Host " Сервер успешно установлен!" -ForegroundColor Green
+        Write-Host " Адрес: http://localhost:8080" -ForegroundColor Green
+        Write-Host " Служба: InventoryServer (автозапуск)" -ForegroundColor Green
+        Write-Host "========================================" -ForegroundColor Green
+    } else {
+        Write-Host ""
+        Write-Host "Служба не запустилась. Проверьте логи:" -ForegroundColor Yellow
+        Write-Host "  $INSTALL_DIR\logs\" -ForegroundColor Yellow
+    }
+
     Write-Host ""
     Read-Host "Нажмите Enter для закрытия"
 }
 
 # Точка входа
-Check-Admin
-Install-PostgreSQL
-Install-Java
-Setup-Database
-Install-Server
+try {
+    Check-Admin
+    Install-PostgreSQL
+    Install-Java
+    Setup-Database
+    Install-Server
 } catch {
+    Write-Host ""
     Write-Host "ОШИБКА: $_" -ForegroundColor Red
+    Write-Host $_.ScriptStackTrace -ForegroundColor DarkRed
     Read-Host "Нажмите Enter для выхода"
 }
