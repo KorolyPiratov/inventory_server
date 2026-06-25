@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -20,47 +21,24 @@ public class IssuanceService {
     private final IssuanceRepository issuanceRepository;
     private final ItemRepository itemRepository;
     private final UserRepository userRepository;
+    private final BackupService backupService;
 
     public List<Issuance> getByItemId(Long itemId) {
         return issuanceRepository.findByItemId(itemId);
-    }
-
-    public Issuance issue(Long itemId, String fullName,
-                          Boolean isIndefinite, String username) {
-        Item item = itemRepository.findById(itemId)
-                .orElseThrow(() -> new RuntimeException("Вещь не найдена"));
-
-        if (item.getQuantity() <= 0) {
-            throw new RuntimeException("Вещь закончилась на складе");
-        }
-
-        User user = userRepository.findByUsername(username)
-                .orElseThrow(() -> new RuntimeException("Пользователь не найден"));
-
-        item.setQuantity(item.getQuantity() - 1);
-        itemRepository.save(item);
-
-        Issuance issuance = new Issuance();
-        issuance.setItem(item);
-        issuance.setFullName(fullName);
-        issuance.setIsIndefinite(isIndefinite);
-        issuance.setCreatedBy(user);
-
-        return issuanceRepository.save(issuance);
     }
 
     public List<IssuanceDto> getAll() {
         return issuanceRepository.findAll().stream()
                 .map(i -> new IssuanceDto(
                         i.getId(),
-                        i.getItem() != null ? i.getItem().getName() : "—",
+                        i.getItem() != null ? i.getItem().getName() : i.getRestoredItemName(),
                         i.getFullName(),
                         i.getIssuedAt(),
                         i.getIsIndefinite(),
                         i.getReturnDate(),
                         i.getItem() != null ? i.getItem().getPrinterName() : null
                 ))
-                .collect(java.util.stream.Collectors.toList());
+                .collect(Collectors.toList());
     }
 
     public Issuance issue(Long itemId, String fullName,
@@ -88,14 +66,25 @@ public class IssuanceService {
         return issuanceRepository.save(issuance);
     }
 
-    public void deleteByItemId(Long itemId) {
-        issuanceRepository.deleteAll(issuanceRepository.findByItemId(itemId));
+    public void deleteByItemId(Long itemId) throws Exception {
+        List<Issuance> toDelete = issuanceRepository.findByItemId(itemId);
+        if (!toDelete.isEmpty()) {
+            backupService.backupIssuances(toDelete);
+        }
+        issuanceRepository.deleteAll(toDelete);
     }
 
-    public void deleteBetween(LocalDate from, LocalDate to) {
-        issuanceRepository.deleteByIssuedAtBetween(from, to);
-    }
-    public void deleteById(Long id) {
+    public void deleteById(Long id) throws Exception {
+        Issuance issuance = issuanceRepository.findById(id).orElseThrow();
+        backupService.backupIssuance(issuance);
         issuanceRepository.deleteById(id);
+    }
+
+    public void deleteBetween(LocalDate from, LocalDate to) throws Exception {
+        List<Issuance> toDelete = issuanceRepository.findByIssuedAtBetween(from, to);
+        if (!toDelete.isEmpty()) {
+            backupService.backupIssuances(toDelete);
+        }
+        issuanceRepository.deleteByIssuedAtBetween(from, to);
     }
 }

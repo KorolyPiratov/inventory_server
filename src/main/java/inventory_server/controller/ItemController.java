@@ -30,11 +30,9 @@ public class ItemController {
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<Item> update(@PathVariable Long id,
-                                       @RequestBody Item item) {
+    public ResponseEntity<Item> update(@PathVariable Long id, @RequestBody Item item) {
         return ResponseEntity.ok(itemService.update(id, item));
     }
-
 
     @GetMapping("/search")
     public ResponseEntity<List<Item>> search(@RequestParam String name) {
@@ -48,14 +46,24 @@ public class ItemController {
             @RequestParam(required = false) String boxNumber) {
         return ResponseEntity.ok(itemService.filter(category, colorType, boxNumber));
     }
+
     @DeleteMapping
-    public ResponseEntity<Void> deleteAll() {
-        itemService.deleteAll();
-        return ResponseEntity.noContent().build();
+    public ResponseEntity<?> deleteAll() {
+        try {
+            itemService.deleteAll();
+            return ResponseEntity.noContent().build();
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().body(e.getMessage());
+        }
     }
+
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> deleteOne(@PathVariable Long id) {
-        itemService.deleteById(id);
-        return ResponseEntity.noContent().build();
+    public ResponseEntity<?> deleteOne(@PathVariable Long id) {
+        try {
+            itemService.deleteById(id);
+            return ResponseEntity.noContent().build();
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().body(e.getMessage());
+        }
     }
 }

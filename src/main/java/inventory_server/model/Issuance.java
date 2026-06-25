@@ -16,9 +16,14 @@ public class Issuance {
     @Column(name = "return_date")
     private LocalDate returnDate;
 
-    @ManyToOne
-    @JoinColumn(name = "item_id", nullable = false)
+    @ManyToOne(optional = true)
+    @JoinColumn(name = "item_id", nullable = true)
     private Item item;
+
+    @Column(name = "restored_item_name")
+    private String restoredItemName;
+    public String getRestoredItemName() { return restoredItemName; }
+    public void setRestoredItemName(String restoredItemName) { this.restoredItemName = restoredItemName; }
 
     @Column(name = "full_name", nullable = false)
     private String fullName;
@@ -32,4 +37,5 @@ public class Issuance {
     @ManyToOne
     @JoinColumn(name = "created_by")
     private User createdBy;
+
 }

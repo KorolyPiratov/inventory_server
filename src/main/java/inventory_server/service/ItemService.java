@@ -13,6 +13,7 @@ public class ItemService {
 
     private final ItemRepository itemRepository;
     private final IssuanceRepository issuanceRepository;
+    private final BackupService backupService;
 
     public List<Item> getAll() {
         return itemRepository.findAll();
@@ -36,11 +37,8 @@ public class ItemService {
         item.setQuantity(updated.getQuantity());
         item.setDescription(updated.getDescription());
         item.setSupplyDate(updated.getSupplyDate());
+        item.setPrinterName(updated.getPrinterName()); // ← было пропущено
         return itemRepository.save(item);
-    }
-
-    public void delete(Long id) {
-        itemRepository.deleteById(id);
     }
 
     public List<Item> search(String name) {
@@ -53,12 +51,20 @@ public class ItemService {
         if (boxNumber != null) return itemRepository.findByBoxNumber(boxNumber);
         return itemRepository.findAll();
     }
-    public void deleteAll() {
-        issuanceRepository.deleteAll();
-        itemRepository.deleteAll();
-    }
-    public void deleteById(Long id) {
+
+    public void deleteById(Long id) throws Exception {
+        Item item = itemRepository.findById(id).orElseThrow();
+        backupService.backupItem(item);
         issuanceRepository.deleteAll(issuanceRepository.findByItemId(id));
         itemRepository.deleteById(id);
+    }
+
+    public void deleteAll() throws Exception {
+        List<Item> all = itemRepository.findAll();
+        if (!all.isEmpty()) {
+            backupService.backupItems(all);
+        }
+        issuanceRepository.deleteAll();
+        itemRepository.deleteAll();
     }
 }
