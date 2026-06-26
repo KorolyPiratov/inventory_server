@@ -98,7 +98,7 @@ function Install-PostgreSQL {
         Start-Sleep -Seconds 2
     }
 
-    # Исправляем pg_hba.conf — заменяем все методы на md5
+    # Исправляем pg_hba.conf
     $hbaFile = "$realDataDir\pg_hba.conf"
     if (Test-Path $hbaFile) {
         Write-Host "Исправляем pg_hba.conf: $hbaFile"
@@ -111,12 +111,12 @@ function Install-PostgreSQL {
         Write-Host "pg_hba.conf не найден: $hbaFile" -ForegroundColor Red
     }
 
-    # Перезапускаем PostgreSQL чтобы применить изменения
+    # Перезапускаем PostgreSQL
     Write-Host "Перезапускаем PostgreSQL..."
     Stop-Service -Name "postgresql-x64-16" -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Seconds 3
-    Start-Service -Name "postgresql-x64-16"
     Start-Sleep -Seconds 5
+    Start-Service -Name "postgresql-x64-16"
+    Start-Sleep -Seconds 8
 }
 
 function Setup-Database {
@@ -149,48 +149,49 @@ function Setup-Database {
         exit 1
     }
 
-    # Принудительно перезагружаем конфиг PostgreSQL
-    Write-Host "Перезагружаем конфиг PostgreSQL..."
-    & "$PG_BIN\psql.exe" -U postgres -c "SELECT pg_reload_conf();" 2>&1 | Out-Null
-    Start-Sleep -Seconds 2
-
-    # Создаём пользователя
-    $userExists = & "$PG_BIN\psql.exe" -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>&1
-    if ($userExists -notmatch "1") {
+    # Создаём пользователя — используем строгое сравнение
+    $userExists = & "$PG_BIN\psql.exe" -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>$null
+    if ("$userExists".Trim() -ne "1") {
         & "$PG_BIN\psql.exe" -U postgres -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';"
         Write-Host "Пользователь $DB_USER создан." -ForegroundColor Green
     } else {
         Write-Host "Пользователь $DB_USER уже существует." -ForegroundColor Yellow
     }
 
-    # Создаём БД с UTF8
-    $dbExists = & "$PG_BIN\psql.exe" -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>&1
-    if ($dbExists -notmatch "1") {
+    # Создаём БД с UTF8 — используем строгое сравнение
+    $dbExists = & "$PG_BIN\psql.exe" -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>$null
+    if ("$dbExists".Trim() -ne "1") {
         & "$PG_BIN\psql.exe" -U postgres -c "CREATE DATABASE $DB_NAME OWNER $DB_USER ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0;"
         Write-Host "База данных $DB_NAME создана." -ForegroundColor Green
     } else {
         Write-Host "База данных $DB_NAME уже существует." -ForegroundColor Yellow
     }
 
-   # Проверяем что пользователь inventory может подключиться
-       Write-Host "Проверяем подключение пользователя $DB_USER..."
-       $env:PGPASSWORD = $DB_PASS
-       try {
-           $testConn = & "$PG_BIN\psql.exe" -U $DB_USER -d $DB_NAME -tAc "SELECT 1" 2>&1
-           if ($testConn -notmatch "1") {
-               throw "Не удалось подключиться"
-           }
-           Write-Host "Подключение пользователя $DB_USER успешно!" -ForegroundColor Green
-       } catch {
-           Write-Host "Пользователь не может подключиться, перезапускаем PostgreSQL..." -ForegroundColor Yellow
-           $env:PGPASSWORD = $PG_PASSWORD
-           Stop-Service -Name "postgresql-x64-16" -Force -ErrorAction SilentlyContinue
-           Start-Sleep -Seconds 5
-           Start-Service -Name "postgresql-x64-16"
-           Start-Sleep -Seconds 5
-           Write-Host "PostgreSQL перезапущен." -ForegroundColor Green
-       }
-   $env:PGPASSWORD = $PG_PASSWORD
+    # Проверяем что пользователь inventory может подключиться
+    Write-Host "Проверяем подключение пользователя $DB_USER..."
+    $env:PGPASSWORD = $DB_PASS
+    $retries = 0
+    $authOk = $false
+    do {
+        Start-Sleep -Seconds 3
+        $retries++
+        $testConn = & "$PG_BIN\psql.exe" -U $DB_USER -d $DB_NAME -tAc "SELECT 1" 2>$null
+        if ("$testConn".Trim() -eq "1") {
+            Write-Host "Подключение пользователя $DB_USER успешно!" -ForegroundColor Green
+            $authOk = $true
+            break
+        }
+        Write-Host "Ожидание авторизации ($retries/10)..."
+    } while ($retries -lt 10)
+
+    if (-not $authOk) {
+        Write-Host "Не удалось подключиться под пользователем $DB_USER." -ForegroundColor Red
+        Write-Host "Попробуйте запустить установщик повторно." -ForegroundColor Yellow
+        Read-Host "Нажмите Enter для выхода"
+        exit 1
+    }
+
+    $env:PGPASSWORD = $PG_PASSWORD
 }
 
 function Install-Server {
@@ -199,7 +200,7 @@ function Install-Server {
     New-Item -ItemType Directory -Force -Path $INSTALL_DIR | Out-Null
     New-Item -ItemType Directory -Force -Path "$INSTALL_DIR\logs" | Out-Null
 
-    # Сначала удаляем старую службу если есть — до копирования файлов
+    # Сначала удаляем старую службу — до копирования файлов
     $existing = Get-Service -Name "InventoryServer" -ErrorAction SilentlyContinue
     if ($existing) {
         Write-Host "Удаляем старую службу..."
