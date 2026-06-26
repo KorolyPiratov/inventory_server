@@ -190,10 +190,7 @@ function Setup-Database {
            Start-Sleep -Seconds 5
            Write-Host "PostgreSQL перезапущен." -ForegroundColor Green
        }
-       else {
-        Write-Host "Подключение пользователя $DB_USER успешно!" -ForegroundColor Green
-    }
-    $env:PGPASSWORD = $PG_PASSWORD
+   $env:PGPASSWORD = $PG_PASSWORD
 }
 
 function Install-Server {
