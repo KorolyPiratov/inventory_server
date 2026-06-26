@@ -149,6 +149,11 @@ function Setup-Database {
         exit 1
     }
 
+    # Принудительно перезагружаем конфиг PostgreSQL
+    Write-Host "Перезагружаем конфиг PostgreSQL..."
+    & "$PG_BIN\psql.exe" -U postgres -c "SELECT pg_reload_conf();" 2>&1 | Out-Null
+    Start-Sleep -Seconds 2
+
     # Создаём пользователя
     $userExists = & "$PG_BIN\psql.exe" -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>&1
     if ($userExists -notmatch "1") {
@@ -166,6 +171,22 @@ function Setup-Database {
     } else {
         Write-Host "База данных $DB_NAME уже существует." -ForegroundColor Yellow
     }
+
+    # Проверяем что пользователь inventory может подключиться
+    Write-Host "Проверяем подключение пользователя $DB_USER..."
+    $env:PGPASSWORD = $DB_PASS
+    $testConn = & "$PG_BIN\psql.exe" -U $DB_USER -d $DB_NAME -tAc "SELECT 1" 2>&1
+    if ($testConn -notmatch "1") {
+        Write-Host "Пользователь не может подключиться, перезапускаем PostgreSQL..." -ForegroundColor Yellow
+        $env:PGPASSWORD = $PG_PASSWORD
+        Stop-Service -Name "postgresql-x64-16" -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 3
+        Start-Service -Name "postgresql-x64-16"
+        Start-Sleep -Seconds 5
+    } else {
+        Write-Host "Подключение пользователя $DB_USER успешно!" -ForegroundColor Green
+    }
+    $env:PGPASSWORD = $PG_PASSWORD
 }
 
 function Install-Server {
