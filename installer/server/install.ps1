@@ -172,18 +172,25 @@ function Setup-Database {
         Write-Host "База данных $DB_NAME уже существует." -ForegroundColor Yellow
     }
 
-    # Проверяем что пользователь inventory может подключиться
-    Write-Host "Проверяем подключение пользователя $DB_USER..."
-    $env:PGPASSWORD = $DB_PASS
-    $testConn = & "$PG_BIN\psql.exe" -U $DB_USER -d $DB_NAME -tAc "SELECT 1" 2>&1
-    if ($testConn -notmatch "1") {
-        Write-Host "Пользователь не может подключиться, перезапускаем PostgreSQL..." -ForegroundColor Yellow
-        $env:PGPASSWORD = $PG_PASSWORD
-        Stop-Service -Name "postgresql-x64-16" -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 3
-        Start-Service -Name "postgresql-x64-16"
-        Start-Sleep -Seconds 5
-    } else {
+   # Проверяем что пользователь inventory может подключиться
+       Write-Host "Проверяем подключение пользователя $DB_USER..."
+       $env:PGPASSWORD = $DB_PASS
+       try {
+           $testConn = & "$PG_BIN\psql.exe" -U $DB_USER -d $DB_NAME -tAc "SELECT 1" 2>&1
+           if ($testConn -notmatch "1") {
+               throw "Не удалось подключиться"
+           }
+           Write-Host "Подключение пользователя $DB_USER успешно!" -ForegroundColor Green
+       } catch {
+           Write-Host "Пользователь не может подключиться, перезапускаем PostgreSQL..." -ForegroundColor Yellow
+           $env:PGPASSWORD = $PG_PASSWORD
+           Stop-Service -Name "postgresql-x64-16" -Force -ErrorAction SilentlyContinue
+           Start-Sleep -Seconds 5
+           Start-Service -Name "postgresql-x64-16"
+           Start-Sleep -Seconds 5
+           Write-Host "PostgreSQL перезапущен." -ForegroundColor Green
+       }
+       $env:PGPASSWORD = $PG_PASSWORD else {
         Write-Host "Подключение пользователя $DB_USER успешно!" -ForegroundColor Green
     }
     $env:PGPASSWORD = $PG_PASSWORD
