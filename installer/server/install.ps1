@@ -4,7 +4,7 @@ $INSTALL_DIR = "C:\InventoryServer"
 $PG_VERSION = "16.3-1"
 $PG_INSTALLER_URL = "https://get.enterprisedb.com/postgresql/postgresql-$PG_VERSION-windows-x64.exe"
 $PG_INSTALLER = "$env:TEMP\pg_installer.exe"
-$PG_DATA = "C:\InventoryServer\pgdata"   # ← исправлено
+$PG_DATA = "C:\InventoryServer\pgdata"
 $PG_PASSWORD = "inventory_pg_pass"
 $DB_NAME = "inventory_db"
 $DB_USER = "inventory"
@@ -98,11 +98,12 @@ function Install-PostgreSQL {
         Start-Sleep -Seconds 2
     }
 
-    # Исправляем pg_hba.conf
+    # Исправляем pg_hba.conf — заменяем все методы на md5
     $hbaFile = "$realDataDir\pg_hba.conf"
     if (Test-Path $hbaFile) {
         Write-Host "Исправляем pg_hba.conf: $hbaFile"
         $content = Get-Content $hbaFile
+        $content = $content -replace 'scram-sha-256', 'md5'
         $content = $content -replace '\btrust\b', 'md5'
         $content | Set-Content $hbaFile
         Write-Host "pg_hba.conf обновлён." -ForegroundColor Green
@@ -110,7 +111,7 @@ function Install-PostgreSQL {
         Write-Host "pg_hba.conf не найден: $hbaFile" -ForegroundColor Red
     }
 
-    # Перезапускаем PostgreSQL
+    # Перезапускаем PostgreSQL чтобы применить изменения
     Write-Host "Перезапускаем PostgreSQL..."
     Stop-Service -Name "postgresql-x64-16" -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 3
@@ -173,11 +174,28 @@ function Install-Server {
     New-Item -ItemType Directory -Force -Path $INSTALL_DIR | Out-Null
     New-Item -ItemType Directory -Force -Path "$INSTALL_DIR\logs" | Out-Null
 
-    $scriptDir = Split-Path -Parent ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+    # Сначала удаляем старую службу если есть — до копирования файлов
+    $existing = Get-Service -Name "InventoryServer" -ErrorAction SilentlyContinue
+    if ($existing) {
+        Write-Host "Удаляем старую службу..."
+        try {
+            & "$INSTALL_DIR\InventoryServer.exe" stop 2>&1 | Out-Null
+            Start-Sleep -Seconds 3
+            & "$INSTALL_DIR\InventoryServer.exe" uninstall 2>&1 | Out-Null
+        } catch {
+            sc.exe stop InventoryServer 2>&1 | Out-Null
+            Start-Sleep -Seconds 3
+            sc.exe delete InventoryServer 2>&1 | Out-Null
+        }
+        Start-Sleep -Seconds 3
+    }
 
+    # Копируем файлы
+    $scriptDir = Split-Path -Parent ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
     Copy-Item "$scriptDir\inventory-server.jar" "$INSTALL_DIR\inventory-server.jar" -Force
     Copy-Item "$scriptDir\winsw.exe" "$INSTALL_DIR\InventoryServer.exe" -Force
 
+    # Создаём application.properties
     $props = @"
 spring.datasource.url=jdbc:postgresql://localhost:5432/$DB_NAME
 spring.datasource.username=$DB_USER
@@ -188,6 +206,7 @@ server.port=8080
 "@
     $props | Out-File -FilePath "$INSTALL_DIR\application.properties" -Encoding UTF8
 
+    # Создаём winsw конфиг
     $winswXml = @"
 <service>
   <id>InventoryServer</id>
@@ -202,25 +221,16 @@ server.port=8080
 "@
     $winswXml | Out-File -FilePath "$INSTALL_DIR\InventoryServer.xml" -Encoding UTF8
 
+    # Открываем порт в брандмауэре
     netsh advfirewall firewall add rule name="InventoryServer" dir=in action=allow protocol=TCP localport=8080 2>&1 | Out-Null
 
-    $existing = Get-Service -Name "InventoryServer" -ErrorAction SilentlyContinue
-    if ($existing) {
-        Write-Host "Удаляем старую службу..."
-        try {
-            & "$INSTALL_DIR\InventoryServer.exe" stop 2>&1 | Out-Null
-            & "$INSTALL_DIR\InventoryServer.exe" uninstall 2>&1 | Out-Null
-        } catch {
-            sc.exe delete InventoryServer 2>&1 | Out-Null
-        }
-        Start-Sleep -Seconds 3
-    }
-
+    # Регистрируем и запускаем службу
     Write-Step "Регистрация службы Windows..."
     & "$INSTALL_DIR\InventoryServer.exe" install
     Start-Sleep -Seconds 3
     & "$INSTALL_DIR\InventoryServer.exe" start
 
+    # Проверяем что служба запустилась
     Start-Sleep -Seconds 8
     $svc = Get-Service -Name "InventoryServer" -ErrorAction SilentlyContinue
     if ($svc -and $svc.Status -eq "Running") {
