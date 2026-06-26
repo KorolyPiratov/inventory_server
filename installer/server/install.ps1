@@ -190,7 +190,7 @@ function Setup-Database {
            Start-Sleep -Seconds 5
            Write-Host "PostgreSQL перезапущен." -ForegroundColor Green
        }
-       $env:PGPASSWORD = $PG_PASSWORD else {
+       else {
         Write-Host "Подключение пользователя $DB_USER успешно!" -ForegroundColor Green
     }
     $env:PGPASSWORD = $PG_PASSWORD
