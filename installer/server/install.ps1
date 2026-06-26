@@ -10,7 +10,7 @@ $DB_NAME = "inventory_db"
 $DB_USER = "inventory"
 $DB_PASS = "inventory_pass"
 $PG_BIN = "C:\Program Files\PostgreSQL\16\bin"
-$JAVA_EXE = "C:\Program Files\Eclipse Adoptium\jdk-21\bin\java.exe"
+$JAVA_EXE = "C:\Program Files\Eclipse Adoptium\jdk-21.0.3.9-hotspot\bin\java.exe"
 
 function Write-Step($msg) {
     Write-Host ""
@@ -54,6 +54,13 @@ function Install-PostgreSQL {
     if (Test-Path "$PG_BIN\psql.exe") {
         Write-Host "PostgreSQL уже установлен." -ForegroundColor Green
         return
+        $svc = Get-Service -Name "postgresql-x64-16" -ErrorAction SilentlyContinue
+            if (-not $svc) {
+                Write-Host "Регистрируем службу PostgreSQL..."
+                & "$PG_BIN\pg_ctl.exe" register -N "postgresql-x64-16" -D "C:\InventoryServer\pgdata" -U "NT AUTHORITY\NetworkService" -w
+                Start-Sleep -Seconds 2
+            }
+            return
     }
 
     Write-Host "Скачивание PostgreSQL $PG_VERSION..."
