@@ -84,8 +84,19 @@ function Install-PostgreSQL {
             & "$PG_BIN\initdb.exe" -D $PG_DATA -U postgres --pwfile="$pwFile" --encoding=UTF8 --locale=C
             Remove-Item $pwFile -Force -ErrorAction SilentlyContinue
         }
+        # Исправляем pg_hba.conf
+        $hbaFile = "$PG_DATA\pg_hba.conf"
+        (Get-Content $hbaFile) -replace 'host    all             all             127.0.0.1/32            trust', 'host    all             all             127.0.0.1/32            md5' | Set-Content $hbaFile
+        (Get-Content $hbaFile) -replace 'host    all             all             ::1/128                 trust', 'host    all             all             ::1/128                 md5' | Set-Content $hbaFile
         & "$PG_BIN\pg_ctl.exe" register -N "postgresql-x64-16" -D $PG_DATA -U "NT AUTHORITY\NetworkService" -w
         Start-Sleep -Seconds 2
+    } else {
+        # Служба есть — всё равно проверяем pg_hba.conf
+        if (Test-Path "$PG_DATA\pg_hba.conf") {
+            $hbaFile = "$PG_DATA\pg_hba.conf"
+            (Get-Content $hbaFile) -replace 'host    all             all             127.0.0.1/32            trust', 'host    all             all             127.0.0.1/32            md5' | Set-Content $hbaFile
+            (Get-Content $hbaFile) -replace 'host    all             all             ::1/128                 trust', 'host    all             all             ::1/128                 md5' | Set-Content $hbaFile
+        }
     }
 }
 
