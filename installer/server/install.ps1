@@ -4,7 +4,7 @@ $INSTALL_DIR = "C:\InventoryServer"
 $PG_VERSION = "16.3-1"
 $PG_INSTALLER_URL = "https://get.enterprisedb.com/postgresql/postgresql-$PG_VERSION-windows-x64.exe"
 $PG_INSTALLER = "$env:TEMP\pg_installer.exe"
-$PG_DATA = "C:\PostgreSQL\data"
+$PG_DATA = "C:\InventoryServer\pgdata"   # ← исправлено
 $PG_PASSWORD = "inventory_pg_pass"
 $DB_NAME = "inventory_db"
 $DB_USER = "inventory"
@@ -77,39 +77,44 @@ function Install-PostgreSQL {
         if (-not (Test-Path $PG_DATA)) {
             New-Item -ItemType Directory -Force -Path $PG_DATA | Out-Null
         }
-        # Инициализируем БД если нет
         if (-not (Test-Path "$PG_DATA\PG_VERSION")) {
             $pwFile = "$env:TEMP\pgpass.txt"
             $PG_PASSWORD | Out-File -FilePath $pwFile -Encoding ASCII -NoNewline
             & "$PG_BIN\initdb.exe" -D $PG_DATA -U postgres --pwfile="$pwFile" --encoding=UTF8 --locale=C
             Remove-Item $pwFile -Force -ErrorAction SilentlyContinue
         }
-        # Исправляем pg_hba.conf
-        $hbaFile = "$PG_DATA\pg_hba.conf"
-        (Get-Content $hbaFile) -replace 'host    all             all             127.0.0.1/32            trust', 'host    all             all             127.0.0.1/32            md5' | Set-Content $hbaFile
-        (Get-Content $hbaFile) -replace 'host    all             all             ::1/128                 trust', 'host    all             all             ::1/128                 md5' | Set-Content $hbaFile
         & "$PG_BIN\pg_ctl.exe" register -N "postgresql-x64-16" -D $PG_DATA -U "NT AUTHORITY\NetworkService" -w
         Start-Sleep -Seconds 2
+    }
+
+    # Всегда исправляем pg_hba.conf и перезапускаем PostgreSQL
+    Write-Host "Настройка аутентификации PostgreSQL..."
+    $hbaFile = "$PG_DATA\pg_hba.conf"
+    if (Test-Path $hbaFile) {
+        $content = Get-Content $hbaFile
+        $content = $content -replace 'trust', 'md5'
+        $content | Set-Content $hbaFile
+        Write-Host "pg_hba.conf обновлён." -ForegroundColor Green
     } else {
-        # Служба есть — всё равно проверяем pg_hba.conf
-        if (Test-Path "$PG_DATA\pg_hba.conf") {
-            $hbaFile = "$PG_DATA\pg_hba.conf"
-            (Get-Content $hbaFile) -replace 'host    all             all             127.0.0.1/32            trust', 'host    all             all             127.0.0.1/32            md5' | Set-Content $hbaFile
-            (Get-Content $hbaFile) -replace 'host    all             all             ::1/128                 trust', 'host    all             all             ::1/128                 md5' | Set-Content $hbaFile
-        }
+        Write-Host "pg_hba.conf не найден по пути: $hbaFile" -ForegroundColor Yellow
+        # Найдём реальный путь
+        $realHba = & "$PG_BIN\psql.exe" -U postgres -tAc "SHOW hba_file" 2>&1
+        Write-Host "Реальный путь: $realHba" -ForegroundColor Yellow
+    }
+
+    # Перезапускаем PostgreSQL чтобы применить изменения
+    $pgSvc = Get-Service -Name "postgresql-x64-16" -ErrorAction SilentlyContinue
+    if ($pgSvc) {
+        Write-Host "Перезапускаем PostgreSQL..."
+        Stop-Service -Name "postgresql-x64-16" -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 3
+        Start-Service -Name "postgresql-x64-16"
+        Start-Sleep -Seconds 5
     }
 }
 
 function Setup-Database {
     Write-Step "Настройка базы данных..."
-
-    # Запускаем службу PostgreSQL
-    $pgService = Get-Service -Name "postgresql*" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($pgService) {
-        Write-Host "Запускаем службу: $($pgService.Name)"
-        Start-Service -Name $pgService.Name -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 5
-    }
 
     $env:PGPASSWORD = $PG_PASSWORD
 
@@ -163,16 +168,11 @@ function Install-Server {
     New-Item -ItemType Directory -Force -Path $INSTALL_DIR | Out-Null
     New-Item -ItemType Directory -Force -Path "$INSTALL_DIR\logs" | Out-Null
 
-    # Папка откуда запущен exe
     $scriptDir = Split-Path -Parent ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
 
-    # Копируем JAR
     Copy-Item "$scriptDir\inventory-server.jar" "$INSTALL_DIR\inventory-server.jar" -Force
-
-    # Копируем WinSW
     Copy-Item "$scriptDir\winsw.exe" "$INSTALL_DIR\InventoryServer.exe" -Force
 
-    # Создаём application.properties
     $props = @"
 spring.datasource.url=jdbc:postgresql://localhost:5432/$DB_NAME
 spring.datasource.username=$DB_USER
@@ -183,7 +183,6 @@ server.port=8080
 "@
     $props | Out-File -FilePath "$INSTALL_DIR\application.properties" -Encoding UTF8
 
-    # Создаём winsw конфиг
     $winswXml = @"
 <service>
   <id>InventoryServer</id>
@@ -198,10 +197,8 @@ server.port=8080
 "@
     $winswXml | Out-File -FilePath "$INSTALL_DIR\InventoryServer.xml" -Encoding UTF8
 
-    # Открываем порт в брандмауэре
     netsh advfirewall firewall add rule name="InventoryServer" dir=in action=allow protocol=TCP localport=8080 2>&1 | Out-Null
 
-    # Удаляем старую службу если есть
     $existing = Get-Service -Name "InventoryServer" -ErrorAction SilentlyContinue
     if ($existing) {
         Write-Host "Удаляем старую службу..."
@@ -214,13 +211,11 @@ server.port=8080
         Start-Sleep -Seconds 3
     }
 
-    # Регистрируем и запускаем службу
     Write-Step "Регистрация службы Windows..."
     & "$INSTALL_DIR\InventoryServer.exe" install
     Start-Sleep -Seconds 3
     & "$INSTALL_DIR\InventoryServer.exe" start
 
-    # Проверяем что служба запустилась
     Start-Sleep -Seconds 8
     $svc = Get-Service -Name "InventoryServer" -ErrorAction SilentlyContinue
     if ($svc -and $svc.Status -eq "Running") {
