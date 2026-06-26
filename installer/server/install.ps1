@@ -4,7 +4,7 @@ $INSTALL_DIR = "C:\InventoryServer"
 $PG_VERSION = "16.3-1"
 $PG_INSTALLER_URL = "https://get.enterprisedb.com/postgresql/postgresql-$PG_VERSION-windows-x64.exe"
 $PG_INSTALLER = "$env:TEMP\pg_installer.exe"
-$PG_DATA = "C:\InventoryServer\pgdata"
+$PG_DATA = "C:\PostgreSQL\data"
 $PG_PASSWORD = "inventory_pg_pass"
 $DB_NAME = "inventory_db"
 $DB_USER = "inventory"
@@ -38,12 +38,10 @@ function Install-Java {
     Write-Host "Скачивание Java 21..."
     $javaUrl = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.3%2B9/OpenJDK21U-jdk_x64_windows_hotspot_21.0.3_9.msi"
     $javaInstaller = "$env:TEMP\java21.msi"
-
     Invoke-WebRequest -Uri $javaUrl -OutFile $javaInstaller -UseBasicParsing
 
     Write-Host "Установка Java 21..."
     Start-Process msiexec -ArgumentList "/i `"$javaInstaller`" /quiet /norestart ADDLOCAL=FeatureMain,FeatureEnvironment,FeatureJarFileRunWith,FeatureJavaHome" -Wait
-
     Remove-Item $javaInstaller -Force -ErrorAction SilentlyContinue
     Write-Host "Java установлена." -ForegroundColor Green
 }
@@ -53,40 +51,46 @@ function Install-PostgreSQL {
 
     if (Test-Path "$PG_BIN\psql.exe") {
         Write-Host "PostgreSQL уже установлен." -ForegroundColor Green
-        return
-        $svc = Get-Service -Name "postgresql-x64-16" -ErrorAction SilentlyContinue
-            if (-not $svc) {
-                Write-Host "Регистрируем службу PostgreSQL..."
-                & "$PG_BIN\pg_ctl.exe" register -N "postgresql-x64-16" -D "C:\InventoryServer\pgdata" -U "NT AUTHORITY\NetworkService" -w
-                Start-Sleep -Seconds 2
-            }
-            return
+    } else {
+        Write-Host "Скачивание PostgreSQL $PG_VERSION..."
+        Write-Host "Это может занять несколько минут..."
+        Invoke-WebRequest -Uri $PG_INSTALLER_URL -OutFile $PG_INSTALLER -UseBasicParsing
+
+        Write-Host "Установка PostgreSQL (тихий режим)..."
+        $pgArgs = @(
+            "--mode", "unattended",
+            "--unattendedmodeui", "none",
+            "--superpassword", $PG_PASSWORD,
+            "--servicename", "postgresql-x64-16",
+            "--datadir", $PG_DATA,
+            "--serverport", "5432"
+        )
+        Start-Process -FilePath $PG_INSTALLER -ArgumentList $pgArgs -Wait -NoNewWindow
+        Remove-Item $PG_INSTALLER -Force -ErrorAction SilentlyContinue
+        Write-Host "PostgreSQL установлен." -ForegroundColor Green
     }
 
-    Write-Host "Скачивание PostgreSQL $PG_VERSION..."
-    Write-Host "Это может занять несколько минут..."
-
-    Invoke-WebRequest -Uri $PG_INSTALLER_URL -OutFile $PG_INSTALLER -UseBasicParsing
-
-    Write-Host "Установка PostgreSQL (тихий режим)..."
-    $pgArgs = @(
-        "--mode", "unattended",
-        "--unattendedmodeui", "none",
-        "--superpassword", $PG_PASSWORD,
-        "--servicename", "postgresql-x64-16",
-        "--datadir", $PG_DATA,
-        "--serverport", "5432"
-    )
-    Start-Process -FilePath $PG_INSTALLER -ArgumentList $pgArgs -Wait -NoNewWindow
-
-    Remove-Item $PG_INSTALLER -Force -ErrorAction SilentlyContinue
-    Write-Host "PostgreSQL установлен." -ForegroundColor Green
+    # Проверяем зарегистрирована ли служба
+    $svc = Get-Service -Name "postgresql-x64-16" -ErrorAction SilentlyContinue
+    if (-not $svc) {
+        Write-Host "Регистрируем службу PostgreSQL..."
+        if (-not (Test-Path $PG_DATA)) {
+            New-Item -ItemType Directory -Force -Path $PG_DATA | Out-Null
+        }
+        # Инициализируем БД если нет
+        if (-not (Test-Path "$PG_DATA\PG_VERSION")) {
+            $pwFile = "$env:TEMP\pgpass.txt"
+            $PG_PASSWORD | Out-File -FilePath $pwFile -Encoding ASCII -NoNewline
+            & "$PG_BIN\initdb.exe" -D $PG_DATA -U postgres --pwfile="$pwFile" --encoding=UTF8 --locale=C
+            Remove-Item $pwFile -Force -ErrorAction SilentlyContinue
+        }
+        & "$PG_BIN\pg_ctl.exe" register -N "postgresql-x64-16" -D $PG_DATA -U "NT AUTHORITY\NetworkService" -w
+        Start-Sleep -Seconds 2
+    }
 }
 
 function Setup-Database {
     Write-Step "Настройка базы данных..."
-
-    chcp 65001 | Out-Null
 
     # Запускаем службу PostgreSQL
     $pgService = Get-Service -Name "postgresql*" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -100,6 +104,7 @@ function Setup-Database {
 
     # Ждём соединения через TCP
     $retries = 0
+    $connected = $false
     do {
         Start-Sleep -Seconds 3
         $retries++
@@ -109,13 +114,14 @@ function Setup-Database {
             $tcp.Connect("localhost", 5432)
             $tcp.Close()
             Write-Host "PostgreSQL доступен!" -ForegroundColor Green
+            $connected = $true
             break
         } catch {
             Write-Host "Ожидание..."
         }
     } while ($retries -lt 20)
 
-    if ($retries -ge 20) {
+    if (-not $connected) {
         Write-Host "PostgreSQL не запустился." -ForegroundColor Red
         Read-Host "Нажмите Enter для выхода"
         exit 1
@@ -130,7 +136,7 @@ function Setup-Database {
         Write-Host "Пользователь $DB_USER уже существует." -ForegroundColor Yellow
     }
 
-    # Создаём БД
+    # Создаём БД с UTF8
     $dbExists = & "$PG_BIN\psql.exe" -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>&1
     if ($dbExists -notmatch "1") {
         & "$PG_BIN\psql.exe" -U postgres -c "CREATE DATABASE $DB_NAME OWNER $DB_USER ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0;"
@@ -146,9 +152,14 @@ function Install-Server {
     New-Item -ItemType Directory -Force -Path $INSTALL_DIR | Out-Null
     New-Item -ItemType Directory -Force -Path "$INSTALL_DIR\logs" | Out-Null
 
-    # Копируем JAR
+    # Папка откуда запущен exe
     $scriptDir = Split-Path -Parent ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName)
+
+    # Копируем JAR
     Copy-Item "$scriptDir\inventory-server.jar" "$INSTALL_DIR\inventory-server.jar" -Force
+
+    # Копируем WinSW
+    Copy-Item "$scriptDir\winsw.exe" "$INSTALL_DIR\InventoryServer.exe" -Force
 
     # Создаём application.properties
     $props = @"
@@ -161,10 +172,7 @@ server.port=8080
 "@
     $props | Out-File -FilePath "$INSTALL_DIR\application.properties" -Encoding UTF8
 
-    # Копируем WinSW
-    Copy-Item "$scriptDir\winsw.exe" "$INSTALL_DIR\InventoryServer.exe" -Force
-
-    # Создаём winsw конфиг с полным путём к Java
+    # Создаём winsw конфиг
     $winswXml = @"
 <service>
   <id>InventoryServer</id>
@@ -180,19 +188,19 @@ server.port=8080
     $winswXml | Out-File -FilePath "$INSTALL_DIR\InventoryServer.xml" -Encoding UTF8
 
     # Открываем порт в брандмауэре
-    netsh advfirewall firewall add rule name="InventoryServer" dir=in action=allow protocol=TCP localport=8080 | Out-Null
+    netsh advfirewall firewall add rule name="InventoryServer" dir=in action=allow protocol=TCP localport=8080 2>&1 | Out-Null
 
     # Удаляем старую службу если есть
     $existing = Get-Service -Name "InventoryServer" -ErrorAction SilentlyContinue
     if ($existing) {
         Write-Host "Удаляем старую службу..."
-        if (Test-Path "$INSTALL_DIR\InventoryServer.exe") {
+        try {
             & "$INSTALL_DIR\InventoryServer.exe" stop 2>&1 | Out-Null
             & "$INSTALL_DIR\InventoryServer.exe" uninstall 2>&1 | Out-Null
-        } else {
+        } catch {
             sc.exe delete InventoryServer 2>&1 | Out-Null
         }
-        Start-Sleep -Seconds 2
+        Start-Sleep -Seconds 3
     }
 
     # Регистрируем и запускаем службу
@@ -202,7 +210,7 @@ server.port=8080
     & "$INSTALL_DIR\InventoryServer.exe" start
 
     # Проверяем что служба запустилась
-    Start-Sleep -Seconds 5
+    Start-Sleep -Seconds 8
     $svc = Get-Service -Name "InventoryServer" -ErrorAction SilentlyContinue
     if ($svc -and $svc.Status -eq "Running") {
         Write-Host ""
