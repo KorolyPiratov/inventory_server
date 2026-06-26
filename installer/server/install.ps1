@@ -133,7 +133,7 @@ function Setup-Database {
     # Создаём БД
     $dbExists = & "$PG_BIN\psql.exe" -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>&1
     if ($dbExists -notmatch "1") {
-        & "$PG_BIN\psql.exe" -U postgres -c "CREATE DATABASE $DB_NAME OWNER $DB_USER;"
+        & "$PG_BIN\psql.exe" -U postgres -c "CREATE DATABASE $DB_NAME OWNER $DB_USER ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0;"
         Write-Host "База данных $DB_NAME создана." -ForegroundColor Green
     } else {
         Write-Host "База данных $DB_NAME уже существует." -ForegroundColor Yellow
@@ -186,8 +186,12 @@ server.port=8080
     $existing = Get-Service -Name "InventoryServer" -ErrorAction SilentlyContinue
     if ($existing) {
         Write-Host "Удаляем старую службу..."
-        & "$INSTALL_DIR\InventoryServer.exe" stop 2>&1 | Out-Null
-        & "$INSTALL_DIR\InventoryServer.exe" uninstall 2>&1 | Out-Null
+        if (Test-Path "$INSTALL_DIR\InventoryServer.exe") {
+            & "$INSTALL_DIR\InventoryServer.exe" stop 2>&1 | Out-Null
+            & "$INSTALL_DIR\InventoryServer.exe" uninstall 2>&1 | Out-Null
+        } else {
+            sc.exe delete InventoryServer 2>&1 | Out-Null
+        }
         Start-Sleep -Seconds 2
     }
 
