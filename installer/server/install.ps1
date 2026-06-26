@@ -53,7 +53,6 @@ function Install-PostgreSQL {
         Write-Host "PostgreSQL уже установлен." -ForegroundColor Green
     } else {
         Write-Host "Скачивание PostgreSQL $PG_VERSION..."
-        Write-Host "Это может занять несколько минут..."
         Invoke-WebRequest -Uri $PG_INSTALLER_URL -OutFile $PG_INSTALLER -UseBasicParsing
 
         Write-Host "Установка PostgreSQL (тихий режим)..."
@@ -70,6 +69,17 @@ function Install-PostgreSQL {
         Write-Host "PostgreSQL установлен." -ForegroundColor Green
     }
 
+    # Находим реальную папку данных из реестра
+    $regPath = "HKLM:\SYSTEM\CurrentControlSet\Services\postgresql-x64-16"
+    $realDataDir = $PG_DATA
+    if (Test-Path $regPath) {
+        $imgPath = (Get-ItemProperty $regPath).ImagePath
+        if ($imgPath -match '-D\s+"?([^"]+)"?') {
+            $realDataDir = $matches[1].Trim()
+            Write-Host "Папка данных PostgreSQL: $realDataDir"
+        }
+    }
+
     # Проверяем зарегистрирована ли служба
     $svc = Get-Service -Name "postgresql-x64-16" -ErrorAction SilentlyContinue
     if (-not $svc) {
@@ -83,34 +93,29 @@ function Install-PostgreSQL {
             & "$PG_BIN\initdb.exe" -D $PG_DATA -U postgres --pwfile="$pwFile" --encoding=UTF8 --locale=C
             Remove-Item $pwFile -Force -ErrorAction SilentlyContinue
         }
+        $realDataDir = $PG_DATA
         & "$PG_BIN\pg_ctl.exe" register -N "postgresql-x64-16" -D $PG_DATA -U "NT AUTHORITY\NetworkService" -w
         Start-Sleep -Seconds 2
     }
 
-    # Всегда исправляем pg_hba.conf и перезапускаем PostgreSQL
-    Write-Host "Настройка аутентификации PostgreSQL..."
-    $hbaFile = "$PG_DATA\pg_hba.conf"
+    # Исправляем pg_hba.conf
+    $hbaFile = "$realDataDir\pg_hba.conf"
     if (Test-Path $hbaFile) {
+        Write-Host "Исправляем pg_hba.conf: $hbaFile"
         $content = Get-Content $hbaFile
-        $content = $content -replace 'trust', 'md5'
+        $content = $content -replace '\btrust\b', 'md5'
         $content | Set-Content $hbaFile
         Write-Host "pg_hba.conf обновлён." -ForegroundColor Green
     } else {
-        Write-Host "pg_hba.conf не найден по пути: $hbaFile" -ForegroundColor Yellow
-        # Найдём реальный путь
-        $realHba = & "$PG_BIN\psql.exe" -U postgres -tAc "SHOW hba_file" 2>&1
-        Write-Host "Реальный путь: $realHba" -ForegroundColor Yellow
+        Write-Host "pg_hba.conf не найден: $hbaFile" -ForegroundColor Red
     }
 
-    # Перезапускаем PostgreSQL чтобы применить изменения
-    $pgSvc = Get-Service -Name "postgresql-x64-16" -ErrorAction SilentlyContinue
-    if ($pgSvc) {
-        Write-Host "Перезапускаем PostgreSQL..."
-        Stop-Service -Name "postgresql-x64-16" -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 3
-        Start-Service -Name "postgresql-x64-16"
-        Start-Sleep -Seconds 5
-    }
+    # Перезапускаем PostgreSQL
+    Write-Host "Перезапускаем PostgreSQL..."
+    Stop-Service -Name "postgresql-x64-16" -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 3
+    Start-Service -Name "postgresql-x64-16"
+    Start-Sleep -Seconds 5
 }
 
 function Setup-Database {
