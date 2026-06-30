@@ -10,7 +10,8 @@ $DB_NAME = "inventory_db"
 $DB_USER = "inventory"
 $DB_PASS = "inventory_pass"
 $PG_BIN = "C:\Program Files\PostgreSQL\16\bin"
-$JAVA_EXE = "C:\Program Files\Eclipse Adoptium\jdk-21.0.3.9-hotspot\bin\java.exe"
+
+# $JAVA_EXE не задаётся здесь — определяется динамически после установки
 
 function Write-Step($msg) {
     Write-Host ""
@@ -27,15 +28,49 @@ function Check-Admin {
     }
 }
 
+# ─────────────────────────────────────────────
+# Динамический поиск java.exe после установки
+# ─────────────────────────────────────────────
+function Resolve-JavaExe {
+    # 1. Ищем любую папку jdk-21*hotspot* в Eclipse Adoptium
+    $adoptiumBase = "C:\Program Files\Eclipse Adoptium"
+    if (Test-Path $adoptiumBase) {
+        $found = Get-ChildItem $adoptiumBase -Directory |
+            Where-Object { $_.Name -like "jdk-21*hotspot*" } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+        if ($found) {
+            $exe = "$($found.FullName)\bin\java.exe"
+            if (Test-Path $exe) {
+                Write-Host "Java найдена: $exe" -ForegroundColor Green
+                return $exe
+            }
+        }
+    }
+
+    # 2. Fallback — ищем через PATH
+    $fromPath = (Get-Command java -ErrorAction SilentlyContinue)?.Source
+    if ($fromPath) {
+        # Проверяем что это Java 21
+        $version = & $fromPath -version 2>&1 | Select-String "version" | Select-Object -First 1
+        Write-Host "Java из PATH: $fromPath ($version)" -ForegroundColor Yellow
+        return $fromPath
+    }
+
+    return $null
+}
+
 function Install-Java {
     Write-Step "Проверка Java..."
 
-    if (Test-Path $JAVA_EXE) {
-        Write-Host "Java уже установлена." -ForegroundColor Green
+    # Проверяем до установки — вдруг уже есть
+    $existing = Resolve-JavaExe
+    if ($existing) {
+        Write-Host "Java уже установлена, пропускаем." -ForegroundColor Green
         return
     }
 
-    Write-Host "Скачивание Java 21..."
+    Write-Host "Скачивание Java 21 (Temurin)..."
     $javaUrl = "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.3%2B9/OpenJDK21U-jdk_x64_windows_hotspot_21.0.3_9.msi"
     $javaInstaller = "$env:TEMP\java21.msi"
     Invoke-WebRequest -Uri $javaUrl -OutFile $javaInstaller -UseBasicParsing
@@ -149,7 +184,7 @@ function Setup-Database {
         exit 1
     }
 
-    # Создаём пользователя — используем строгое сравнение
+    # Создаём пользователя
     $userExists = & "$PG_BIN\psql.exe" -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DB_USER'" 2>$null
     if ("$userExists".Trim() -ne "1") {
         & "$PG_BIN\psql.exe" -U postgres -c "CREATE USER $DB_USER WITH PASSWORD '$DB_PASS';"
@@ -158,7 +193,7 @@ function Setup-Database {
         Write-Host "Пользователь $DB_USER уже существует." -ForegroundColor Yellow
     }
 
-    # Создаём БД с UTF8 — используем строгое сравнение
+    # Создаём БД
     $dbExists = & "$PG_BIN\psql.exe" -U postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 2>$null
     if ("$dbExists".Trim() -ne "1") {
         & "$PG_BIN\psql.exe" -U postgres -c "CREATE DATABASE $DB_NAME OWNER $DB_USER ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0;"
@@ -167,7 +202,7 @@ function Setup-Database {
         Write-Host "База данных $DB_NAME уже существует." -ForegroundColor Yellow
     }
 
-    # Проверяем что пользователь inventory может подключиться
+    # Проверяем подключение под inventory
     Write-Host "Проверяем подключение пользователя $DB_USER..."
     $env:PGPASSWORD = $DB_PASS
     $retries = 0
@@ -191,16 +226,20 @@ function Setup-Database {
         exit 1
     }
 
-    $env:PGPASSWORD = $PG_PASSWORD
+    # Очищаем пароль из переменных среды
+    $env:PGPASSWORD = ""
+    Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
 }
 
 function Install-Server {
+    param([string]$JavaExe)
+
     Write-Step "Установка сервера..."
 
     New-Item -ItemType Directory -Force -Path $INSTALL_DIR | Out-Null
     New-Item -ItemType Directory -Force -Path "$INSTALL_DIR\logs" | Out-Null
 
-    # Сначала удаляем старую службу — до копирования файлов
+    # Удаляем старую службу до копирования файлов
     $existing = Get-Service -Name "InventoryServer" -ErrorAction SilentlyContinue
     if ($existing) {
         Write-Host "Удаляем старую службу..."
@@ -232,13 +271,13 @@ server.port=8080
 "@
     $props | Out-File -FilePath "$INSTALL_DIR\application.properties" -Encoding UTF8
 
-    # Создаём winsw конфиг
+    # Создаём winsw конфиг с реальным путём к Java
     $winswXml = @"
 <service>
   <id>InventoryServer</id>
   <name>Inventory Server</name>
   <description>Inventory Management Server</description>
-  <executable>$JAVA_EXE</executable>
+  <executable>$JavaExe</executable>
   <arguments>-jar "$INSTALL_DIR\inventory-server.jar" --spring.config.location=file:$INSTALL_DIR\application.properties</arguments>
   <logpath>$INSTALL_DIR\logs</logpath>
   <log mode="roll"/>
@@ -256,33 +295,74 @@ server.port=8080
     Start-Sleep -Seconds 3
     & "$INSTALL_DIR\InventoryServer.exe" start
 
-    # Проверяем что служба запустилась
-    Start-Sleep -Seconds 8
+    # Проверяем статус службы
+    Start-Sleep -Seconds 5
     $svc = Get-Service -Name "InventoryServer" -ErrorAction SilentlyContinue
-    if ($svc -and $svc.Status -eq "Running") {
+    if (-not $svc -or $svc.Status -ne "Running") {
+        Write-Host "Служба не запустилась, проверяем логи..." -ForegroundColor Yellow
+        Write-Host "  $INSTALL_DIR\logs\" -ForegroundColor Yellow
+        Read-Host "Нажмите Enter для выхода"
+        exit 1
+    }
+
+    # Ждём пока Spring Boot поднимется на порту 8080
+    Write-Host "Ожидание запуска приложения на порту 8080..."
+    $retries = 0
+    $appReady = $false
+    do {
+        Start-Sleep -Seconds 3
+        $retries++
+        try {
+            $tcp = New-Object System.Net.Sockets.TcpClient
+            $tcp.Connect("localhost", 8080)
+            $tcp.Close()
+            $appReady = $true
+            break
+        } catch {
+            Write-Host "Ожидание ($retries/20)..."
+        }
+    } while ($retries -lt 20)
+
+    if ($appReady) {
         Write-Host ""
         Write-Host "========================================" -ForegroundColor Green
-        Write-Host " Сервер успешно установлен!" -ForegroundColor Green
-        Write-Host " Адрес: http://localhost:8080" -ForegroundColor Green
-        Write-Host " Служба: InventoryServer (автозапуск)" -ForegroundColor Green
+        Write-Host " Сервер успешно установлен и запущен!" -ForegroundColor Green
+        Write-Host " Адрес: http://localhost:8080"          -ForegroundColor Green
+        Write-Host " Служба: InventoryServer (автозапуск)"  -ForegroundColor Green
+        Write-Host " Java: $JavaExe"                        -ForegroundColor Green
         Write-Host "========================================" -ForegroundColor Green
     } else {
         Write-Host ""
-        Write-Host "Служба не запустилась. Проверьте логи:" -ForegroundColor Yellow
-        Write-Host "  $INSTALL_DIR\logs\" -ForegroundColor Yellow
+        Write-Host "Служба запущена, но порт 8080 не отвечает." -ForegroundColor Yellow
+        Write-Host "Spring Boot может ещё загружаться — подождите минуту." -ForegroundColor Yellow
+        Write-Host "Логи: $INSTALL_DIR\logs\" -ForegroundColor Yellow
     }
 
     Write-Host ""
     Read-Host "Нажмите Enter для закрытия"
 }
 
+# ─────────────────────────────────────────────
 # Точка входа
+# ─────────────────────────────────────────────
 try {
     Check-Admin
-    Install-PostgreSQL
     Install-Java
+    Install-PostgreSQL
+
+    # Резолвим Java после установки — получаем реальный путь
+    $JAVA_EXE = Resolve-JavaExe
+    if (-not $JAVA_EXE) {
+        Write-Host ""
+        Write-Host "ОШИБКА: Java не найдена после установки!" -ForegroundColor Red
+        Write-Host "Проверьте C:\Program Files\Eclipse Adoptium\" -ForegroundColor Yellow
+        Read-Host "Нажмите Enter для выхода"
+        exit 1
+    }
+    Write-Host "Используем Java: $JAVA_EXE" -ForegroundColor Cyan
+
     Setup-Database
-    Install-Server
+    Install-Server -JavaExe $JAVA_EXE
 } catch {
     Write-Host ""
     Write-Host "ОШИБКА: $_" -ForegroundColor Red

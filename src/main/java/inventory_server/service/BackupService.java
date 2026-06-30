@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import inventory_server.dto.DeletedIssuanceDto;
 import inventory_server.dto.DeletedItemDto;
+import inventory_server.dto.DeletedItemWithIssuancesDto;
 import inventory_server.model.DeletedBackup;
 import inventory_server.model.Issuance;
 import inventory_server.model.Item;
@@ -12,6 +13,7 @@ import inventory_server.repository.IssuanceRepository;
 import inventory_server.repository.ItemRepository;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import lombok.RequiredArgsConstructor;
 
 import java.time.LocalDateTime;
@@ -40,6 +42,22 @@ public class BackupService {
                 objectMapper.writeValueAsString(dtos));
     }
 
+    /**
+     * Бэкапит вещь вместе со всеми её выдачами как единый пакет.
+     * При восстановлении и вещь, и история выдач вернутся вместе.
+     */
+    public void backupItemWithIssuances(Item item, List<Issuance> issuances) throws Exception {
+        DeletedItemWithIssuancesDto dto = new DeletedItemWithIssuancesDto();
+        dto.item = toItemDto(item);
+        dto.issuances = issuances.stream().map(this::toIssuanceDto).toList();
+
+        String desc = item.getName() + (issuances.isEmpty()
+                ? ""
+                : " (+" + issuances.size() + " записей архива)");
+
+        save("ITEM_WITH_ISSUANCES", desc, objectMapper.writeValueAsString(dto));
+    }
+
     public void backupIssuance(Issuance issuance) throws Exception {
         DeletedIssuanceDto dto = toIssuanceDto(issuance);
         String desc = (issuance.getItem() != null ? issuance.getItem().getName() : issuance.getRestoredItemName())
@@ -65,6 +83,7 @@ public class BackupService {
 
     // ── Восстановление ───────────────────────────────────────────────
 
+    @Transactional
     public void restore(Long backupId) throws Exception {
         DeletedBackup b = backupRepo.findById(backupId)
                 .orElseThrow(() -> new RuntimeException("Резервная копия не найдена"));
@@ -78,6 +97,27 @@ public class BackupService {
                 List<DeletedItemDto> dtos = objectMapper.readValue(
                         b.getDataJson(), new TypeReference<>() {});
                 itemRepository.saveAll(dtos.stream().map(this::fromItemDto).toList());
+            }
+            case "ITEM_WITH_ISSUANCES" -> {
+                DeletedItemWithIssuancesDto dto = objectMapper.readValue(
+                        b.getDataJson(), DeletedItemWithIssuancesDto.class);
+
+                // Восстанавливаем вещь — получаем новый id
+                Item restoredItem = itemRepository.save(fromItemDto(dto.item));
+
+                // Восстанавливаем выдачи, привязывая к новой вещи
+                if (dto.issuances != null && !dto.issuances.isEmpty()) {
+                    List<Issuance> restoredIssuances = dto.issuances.stream()
+                            .map(issuanceDto -> {
+                                Issuance issuance = fromIssuanceDto(issuanceDto);
+                                issuance.setItem(restoredItem);
+                                // restoredItemName больше не нужен — вещь снова существует
+                                issuance.setRestoredItemName(null);
+                                return issuance;
+                            })
+                            .toList();
+                    issuanceRepository.saveAll(restoredIssuances);
+                }
             }
             case "ISSUANCE" -> {
                 DeletedIssuanceDto dto = objectMapper.readValue(
@@ -107,6 +147,7 @@ public class BackupService {
     // ── Автоочистка старше 24 часов ──────────────────────────────────
 
     @Scheduled(fixedDelay = 3_600_000)
+    @Transactional
     public void cleanOld() {
         backupRepo.deleteByDeletedAtBefore(LocalDateTime.now().minusHours(24));
     }
@@ -117,9 +158,9 @@ public class BackupService {
         DeletedItemDto dto = new DeletedItemDto();
         dto.name        = item.getName();
         dto.category    = item.getCategory();
-        dto.colorType   = item.getColorType();   // colorType, не color
+        dto.colorType   = item.getColorType();
         dto.quantity    = item.getQuantity();
-        dto.boxNumber   = item.getBoxNumber();   // String, не Integer
+        dto.boxNumber   = item.getBoxNumber();
         dto.printerName = item.getPrinterName();
         dto.supplyDate  = item.getSupplyDate();
         dto.description = item.getDescription();
@@ -147,9 +188,9 @@ public class BackupService {
                 ? issuance.getItem().getName()
                 : issuance.getRestoredItemName();
         dto.fullName     = issuance.getFullName();
-        dto.issuedAt     = issuance.getIssuedAt();       // LocalDate
-        dto.isIndefinite = issuance.getIsIndefinite();   // Boolean
-        dto.returnDate   = issuance.getReturnDate();     // LocalDate
+        dto.issuedAt     = issuance.getIssuedAt();
+        dto.isIndefinite = issuance.getIsIndefinite();
+        dto.returnDate   = issuance.getReturnDate();
         return dto;
     }
 
@@ -160,7 +201,6 @@ public class BackupService {
         issuance.setIssuedAt(dto.issuedAt);
         issuance.setIsIndefinite(dto.isIndefinite);
         issuance.setReturnDate(dto.returnDate);
-        // item = null, createdBy = null — историческая запись
         return issuance;
     }
 }

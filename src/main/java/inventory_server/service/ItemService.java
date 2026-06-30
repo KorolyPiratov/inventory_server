@@ -1,10 +1,12 @@
 package inventory_server.service;
 
+import inventory_server.model.Issuance;
 import inventory_server.model.Item;
 import inventory_server.repository.IssuanceRepository;
 import inventory_server.repository.ItemRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 
 @Service
@@ -37,7 +39,7 @@ public class ItemService {
         item.setQuantity(updated.getQuantity());
         item.setDescription(updated.getDescription());
         item.setSupplyDate(updated.getSupplyDate());
-        item.setPrinterName(updated.getPrinterName()); // ← было пропущено
+        item.setPrinterName(updated.getPrinterName());
         return itemRepository.save(item);
     }
 
@@ -52,13 +54,20 @@ public class ItemService {
         return itemRepository.findAll();
     }
 
+    @Transactional
     public void deleteById(Long id) throws Exception {
         Item item = itemRepository.findById(id).orElseThrow();
-        backupService.backupItem(item);
-        issuanceRepository.deleteAll(issuanceRepository.findByItemId(id));
+        List<Issuance> issuances = issuanceRepository.findByItemId(id);
+
+        // Бэкапим вещь и её выдачи как единый пакет —
+        // при восстановлении вернётся всё вместе
+        backupService.backupItemWithIssuances(item, issuances);
+
+        issuanceRepository.deleteAll(issuances);
         itemRepository.deleteById(id);
     }
 
+    @Transactional
     public void deleteAll() throws Exception {
         List<Item> all = itemRepository.findAll();
         if (!all.isEmpty()) {
